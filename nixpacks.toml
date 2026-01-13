@@ -1,0 +1,18 @@
+[phases.setup]
+nixPkgs = ["nodejs_24", "pnpm"]
+
+[phases.install]
+cmds = [
+  "pnpm install --frozen-lockfile"
+]
+
+[phases.build]
+cmds = [
+  "pnpm run build"
+]
+
+[start]
+cmd = "pnpm start"
+
+[variables]
+NODE_ENV = "production"
