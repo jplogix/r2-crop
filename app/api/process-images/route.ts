@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
 
         for (let rowIndex = 0; rowIndex < inputRows.length; rowIndex++) {
           const row = inputRows[rowIndex]
-          const outputRow: Partial<OutputRow> = { sku: row.sku }
+          const outputRow: OutputRow = { sku: row.sku }
 
           // Send progress update
           sendMessage({
@@ -81,39 +81,36 @@ export async function POST(request: NextRequest) {
             currentSku: row.sku,
           })
 
-          // Process each image URL (1-8)
-          for (let i = 1; i <= 8; i++) {
-            const urlKey = `image_url${i}` as keyof InputRow
-            const imageUrl = row[urlKey]
-
-            if (!imageUrl) continue
+          // Process each image URL in the row
+          for (let i = 0; i < row.imageUrls.length; i++) {
+            const imageUrl = row.imageUrls[i]
+            const imageIndex = i + 1 // 1-based index for output
 
             try {
               // Download image
               const imageBuffer = await downloadImage(imageUrl)
 
-              // Crop image
+              // Crop/resize image with white background padding
               const croppedBuffer = await cropImage(imageBuffer, { width, height })
 
-              // Upload to R2
-              const r2Key = `${row.sku}-${i}.jpg`
+              // Upload to R2 with SKU and index
+              const r2Key = `${row.sku}-${imageIndex}.jpg`
               const r2Url = await uploadToR2(croppedBuffer, r2Key, bucketName)
 
-              // Add to output
-              const r2UrlKey = `r2_url_${i}` as keyof OutputRow
-              outputRow[r2UrlKey] = r2Url
+              // Add to output with dynamic key
+              outputRow[`r2_url_${imageIndex}`] = r2Url
             } catch (error) {
               errors.push({
                 sku: row.sku,
-                imageIndex: i,
+                imageIndex,
                 error: error instanceof Error ? error.message : "Unknown error",
               })
 
-              // For image_url1, this is a critical error
-              if (i === 1) {
+              // For the first image, this is a critical error
+              if (i === 0) {
                 sendMessage({
                   type: "error",
-                  error: `Failed to process required image for SKU ${row.sku}: ${error instanceof Error ? error.message : "Unknown error"}`,
+                  error: `Failed to process required first image for SKU ${row.sku}: ${error instanceof Error ? error.message : "Unknown error"}`,
                 })
                 controller.close()
                 return
@@ -121,7 +118,7 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          outputRows.push(outputRow as OutputRow)
+          outputRows.push(outputRow)
         }
 
         // Generate output file
