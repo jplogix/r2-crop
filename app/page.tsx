@@ -180,7 +180,7 @@ export default function Home() {
               <div className="rounded-lg bg-primary/10 p-2">
                 <ImageIcon className="h-6 w-6 text-primary" />
               </div>
-              <h1 className="text-3xl font-bold text-foreground">Image Processing Pipeline</h1>
+              <h1 className="text-3xl font-bold text-foreground">Image Processor</h1>
             </div>
             <p className="text-muted-foreground leading-relaxed">
               Batch process product images: crop, optimize, and upload to Cloudflare R2 storage
