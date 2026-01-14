@@ -1,8 +1,9 @@
 "use client"
 
+import { Download, ImageIcon, Settings } from "lucide-react"
 import { useState } from "react"
-import { FileUpload } from "@/components/file-upload"
 import { CropDimensionsInput } from "@/components/crop-dimensions-input"
+import { FileUpload } from "@/components/file-upload"
 import { ProcessingProgress } from "@/components/processing-progress"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -10,7 +11,6 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { parseCSV } from "@/lib/csv-parser"
 import type { CropDimensions, ProcessingProgress as ProgressType } from "@/lib/types"
-import { Download, ImageIcon, Settings } from "lucide-react"
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null)
@@ -20,12 +20,16 @@ export default function Home() {
   const [progress, setProgress] = useState<ProgressType | null>(null)
   const [outputData, setOutputData] = useState<string | null>(null)
   const [errors, setErrors] = useState<string[]>([])
+  const [processingErrors, setProcessingErrors] = useState<Array<{ sku: string; imageIndex: number; error: string }>>([])
+  const [successfulImages, setSuccessfulImages] = useState<number>(0)
 
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile)
     setErrors([])
     setOutputData(null)
     setProgress(null)
+    setProcessingErrors([])
+    setSuccessfulImages(0)
   }
 
   const validateInputs = (): string[] => {
@@ -51,7 +55,7 @@ export default function Home() {
           }
         }
         reader.readAsText(file)
-      } catch (error) {
+      } catch {
         validationErrors.push("Unable to read file")
       }
     }
@@ -131,6 +135,12 @@ export default function Home() {
                 status: "complete",
               })
               setOutputData(data.output)
+              if (data.errors && data.errors.length > 0) {
+                setProcessingErrors(data.errors)
+              }
+              if (data.successfulImages !== undefined) {
+                setSuccessfulImages(data.successfulImages)
+              }
             } else if (data.type === "error") {
               setProgress({
                 currentRow: 0,
@@ -244,6 +254,36 @@ export default function Home() {
 
             {/* Progress */}
             {progress && <ProcessingProgress progress={progress} />}
+
+            {/* Processing Errors Summary */}
+            {processingErrors.length > 0 && (
+              <Card className="border-yellow-500/50 bg-yellow-500/5">
+                <div className="p-6">
+                  <div className="flex items-start gap-3 mb-4">
+                    <div className="rounded-lg bg-yellow-500/10 p-2">
+                      <Settings className="h-5 w-5 text-yellow-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-foreground">Processing Completed with Errors</h3>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {successfulImages > 0 && `${successfulImages} image(s) processed successfully. `}
+                        {processingErrors.length} image(s) failed to process but the workflow continued.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {processingErrors.map((err, index) => (
+                      <div key={index} className="text-sm bg-background/50 rounded-lg p-3 border border-border">
+                        <div className="font-medium text-foreground mb-1">
+                          SKU: {err.sku} - Image {err.imageIndex}
+                        </div>
+                        <div className="text-yellow-700 dark:text-yellow-500">{err.error}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            )}
 
             {/* Actions */}
             <div className="flex gap-4">

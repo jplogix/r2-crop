@@ -1,163 +1,204 @@
-import { type NextRequest } from "next/server"
-import { parseCSV, generateCSV } from "@/lib/csv-parser"
-import { downloadImage, cropImage } from "@/lib/image-processor"
-import { uploadToR2 } from "@/lib/r2-client"
-import type { InputRow, OutputRow, ProcessingError } from "@/lib/types"
+import type { NextRequest } from "next/server";
+import { generateCSV, parseCSV } from "@/lib/csv-parser";
+import { cropImage, downloadImage } from "@/lib/image-processor";
+import { uploadToR2 } from "@/lib/r2-client";
+import type { InputRow, OutputRow, ProcessingError } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
-  const encoder = new TextEncoder()
+	const encoder = new TextEncoder();
 
-  // Create a readable stream for SSE
-  const stream = new ReadableStream({
-    async start(controller) {
-      const sendMessage = (data: any) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
-      }
+	// Create a readable stream for SSE
+	const stream = new ReadableStream({
+		async start(controller) {
+			const sendMessage = (data: { type: string; [key: string]: unknown }) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+			};
 
-      try {
-        const formData = await request.formData()
-        const file = formData.get("file") as File
-        const width = Number.parseInt(formData.get("width") as string)
-        const height = Number.parseInt(formData.get("height") as string)
-        const format = formData.get("format") as string
+			try {
+				const formData = await request.formData();
+				const file = formData.get("file") as File;
+				const width = Number.parseInt(formData.get("width") as string);
+				const height = Number.parseInt(formData.get("height") as string);
+				const format = formData.get("format") as string;
 
-        // Validate inputs
-        if (!file) {
-          sendMessage({ type: "error", error: "No file provided" })
-          controller.close()
-          return
-        }
+				// Validate inputs
+				if (!file) {
+					sendMessage({ type: "error", error: "No file provided" });
+					controller.close();
+					return;
+				}
 
-        if (!width || !height || width <= 0 || height <= 0) {
-          sendMessage({ type: "error", error: "Invalid crop dimensions" })
-          controller.close()
-          return
-        }
+				if (!width || !height || width <= 0 || height <= 0) {
+					sendMessage({ type: "error", error: "Invalid crop dimensions" });
+					controller.close();
+					return;
+				}
 
-        // Get R2 bucket name from environment
-        const bucketName = process.env.R2_BUCKET_NAME
-        if (!bucketName) {
-          sendMessage({ type: "error", error: "R2_BUCKET_NAME environment variable is not set" })
-          controller.close()
-          return
-        }
+				// Get R2 bucket name from environment
+				const bucketName = process.env.R2_BUCKET_NAME;
+				if (!bucketName) {
+					sendMessage({
+						type: "error",
+						error: "R2_BUCKET_NAME environment variable is not set",
+					});
+					controller.close();
+					return;
+				}
 
-        // Parse CSV file
-        const content = await file.text()
-        let inputRows: InputRow[]
+				// Parse CSV file
+				const content = await file.text();
+				let inputRows: InputRow[];
 
-        try {
-          inputRows = parseCSV(content)
-        } catch (error) {
-          sendMessage({
-            type: "error",
-            error: error instanceof Error ? error.message : "Failed to parse CSV",
-          })
-          controller.close()
-          return
-        }
+				try {
+					inputRows = parseCSV(content);
+				} catch (error) {
+					sendMessage({
+						type: "error",
+						error:
+							error instanceof Error ? error.message : "Failed to parse CSV",
+					});
+					controller.close();
+					return;
+				}
 
-        // Send initial progress
-        sendMessage({
-          type: "progress",
-          currentRow: 0,
-          totalRows: inputRows.length,
-          currentSku: "Starting...",
-        })
+				// Send initial progress
+				sendMessage({
+					type: "progress",
+					currentRow: 0,
+					totalRows: inputRows.length,
+					currentSku: "Starting...",
+				});
 
-        // Process images
-        const outputRows: OutputRow[] = []
-        const errors: ProcessingError[] = []
+				// Process images
+				const outputRows: OutputRow[] = [];
+				const errors: ProcessingError[] = [];
 
-        for (let rowIndex = 0; rowIndex < inputRows.length; rowIndex++) {
-          const row = inputRows[rowIndex]
-          const outputRow: OutputRow = { sku: row.sku }
+				for (let rowIndex = 0; rowIndex < inputRows.length; rowIndex++) {
+					const row = inputRows[rowIndex];
+					const outputRow: OutputRow = { sku: row.sku };
 
-          // Send progress update
-          sendMessage({
-            type: "progress",
-            currentRow: rowIndex + 1,
-            totalRows: inputRows.length,
-            currentSku: row.sku,
-          })
+					// Send progress update
+					sendMessage({
+						type: "progress",
+						currentRow: rowIndex + 1,
+						totalRows: inputRows.length,
+						currentSku: row.sku,
+					});
 
-          // Process each image URL in the row
-          for (let i = 0; i < row.imageUrls.length; i++) {
-            const imageUrl = row.imageUrls[i]
-            const imageIndex = i + 1 // 1-based index for output
+					// Process each image URL in the row
+					for (let i = 0; i < row.imageUrls.length; i++) {
+						const imageUrl = row.imageUrls[i];
+						const imageIndex = i + 1; // 1-based index for output
 
-            try {
-              // Download image
-              const imageBuffer = await downloadImage(imageUrl)
+						// Skip empty URLs
+						if (!imageUrl || imageUrl.trim() === "") {
+							continue;
+						}
 
-              // Crop/resize image with white background padding
-              const croppedBuffer = await cropImage(imageBuffer, { width, height })
+						try {
+							// Validate URL format
+							try {
+								new URL(imageUrl);
+							} catch {
+								throw new Error("Invalid URL format");
+							}
 
-              // Upload to R2 with SKU and index
-              const r2Key = `${row.sku}-${imageIndex}.jpg`
-              const r2Url = await uploadToR2(croppedBuffer, r2Key, bucketName)
+							// Download image
+							const imageBuffer = await downloadImage(imageUrl);
 
-              // Add to output with dynamic key
-              outputRow[`r2_url_${imageIndex}`] = r2Url
-            } catch (error) {
-              errors.push({
-                sku: row.sku,
-                imageIndex,
-                error: error instanceof Error ? error.message : "Unknown error",
-              })
+							// Crop/resize image with white background padding
+							const croppedBuffer = await cropImage(imageBuffer, {
+								width,
+								height,
+							});
 
-              // For the first image, this is a critical error
-              if (i === 0) {
-                sendMessage({
-                  type: "error",
-                  error: `Failed to process required first image for SKU ${row.sku}: ${error instanceof Error ? error.message : "Unknown error"}`,
-                })
-                controller.close()
-                return
-              }
-            }
-          }
+							// Upload to R2 with SKU and index
+							const r2Key = `${row.sku}-${imageIndex}.jpg`;
+							const r2Url = await uploadToR2(croppedBuffer, r2Key, bucketName);
 
-          outputRows.push(outputRow)
-        }
+							// Add to output with dynamic key
+							outputRow[`r2_url_${imageIndex}`] = r2Url;
+						} catch (error) {
+							const errorMessage =
+								error instanceof Error ? error.message : "Unknown error";
 
-        // Generate output file
-        let output: string
+							errors.push({
+								sku: row.sku,
+								imageIndex,
+								error: errorMessage,
+							});
 
-        if (format === "excel") {
-          // For Excel, we'll still generate CSV format
-          // In a production app, you'd use a library like xlsx
-          output = generateCSV(outputRows as unknown as Record<string, string>[])
-        } else {
-          output = generateCSV(outputRows as unknown as Record<string, string>[])
-        }
+							// Log error for debugging but continue processing
+							console.error(
+								`[Image Processing] SKU ${row.sku}, Image ${imageIndex}: ${errorMessage}`,
+								{
+									url: imageUrl,
+									sku: row.sku,
+									index: imageIndex,
+								},
+							);
 
-        // Send completion message
-        sendMessage({
-          type: "complete",
-          output,
-          processedCount: outputRows.length,
-          totalCount: inputRows.length,
-          errors: errors.length > 0 ? errors : undefined,
-        })
+							// Add placeholder or skip entry for failed images
+							// Don't fail the entire process - continue with remaining images
+							outputRow[`r2_url_${imageIndex}`] = ""; // Empty string for failed uploads
+						}
+					}
 
-        controller.close()
-      } catch (error) {
-        console.error("[v0] Processing error:", error)
-        sendMessage({
-          type: "error",
-          error: error instanceof Error ? error.message : "Processing failed",
-        })
-        controller.close()
-      }
-    },
-  })
+					outputRows.push(outputRow);
+				}
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  })
+				// Generate output file
+				let output: string;
+
+				if (format === "excel") {
+					// For Excel, we'll still generate CSV format
+					// In a production app, you'd use a library like xlsx
+					output = generateCSV(
+						outputRows as unknown as Record<string, string>[],
+					);
+				} else {
+					output = generateCSV(
+						outputRows as unknown as Record<string, string>[],
+					);
+				}
+
+				// Calculate success statistics
+				const successfulImages = outputRows.reduce((count, row) => {
+					return (
+						count +
+						Object.keys(row).filter(
+							(key) => key.startsWith("r2_url_") && row[key] !== "",
+						).length
+					);
+				}, 0);
+
+				// Send completion message
+				sendMessage({
+					type: "complete",
+					output,
+					processedCount: outputRows.length,
+					totalCount: inputRows.length,
+					successfulImages,
+					errors: errors.length > 0 ? errors : undefined,
+				});
+
+				controller.close();
+			} catch (error) {
+				console.error("[v0] Processing error:", error);
+				sendMessage({
+					type: "error",
+					error: error instanceof Error ? error.message : "Processing failed",
+				});
+				controller.close();
+			}
+		},
+	});
+
+	return new Response(stream, {
+		headers: {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		},
+	});
 }
